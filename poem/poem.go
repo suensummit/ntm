@@ -2,8 +2,15 @@ package poem
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"os"
+	"sort"
+)
+
+const (
+	indexLinefeed  = 1
+	indexEndOfPoem = 2
 )
 
 type Dataset struct {
@@ -12,7 +19,8 @@ type Dataset struct {
 }
 
 type Generator struct {
-	Dataset Dataset
+	Dataset     Dataset
+	IndexToChar map[int]string
 
 	indices []int
 	offset  int
@@ -24,16 +32,21 @@ func NewGenerator(filepath string) (*Generator, error) {
 		return nil, err
 	}
 	defer f.Close()
-	g := Generator{}
+	g := Generator{IndexToChar: make(map[int]string)}
 	if err := json.NewDecoder(f).Decode(&g.Dataset); err != nil {
 		return nil, err
 	}
+
+	for s, i := range g.Dataset.Chars {
+		g.IndexToChar[i] = s
+	}
+
 	g.indices = make([]int, len(g.Dataset.Shis))
 	g.resample()
 	return &g, nil
 }
 
-func (g *Generator) GenSeq() (x, y [][]float64) {
+func (g *Generator) GenSeq() ([][]float64, []int) {
 	poem := g.Dataset.Shis[g.indices[g.offset]]
 	g.offset += 1
 	if g.offset == len(g.indices) {
@@ -41,18 +54,12 @@ func (g *Generator) GenSeq() (x, y [][]float64) {
 	}
 
 	// Limit poem size to avoid memory issues.
-	// For poems with lines over 200, we might need over 10GB.
+	// For poems with lines over 200, we might need over 10GB of RAM.
 	if len(poem) > 32 {
 		poem = poem[0:32]
 	}
 
-	inputSize := len(g.Dataset.Chars) + 3
-	// The output vector representation is
-	// 0 bit for the unknown character
-	// [1,len(g.Dataset.Chars)] for characters
-	// len(g.Dataset.Chars)+1 for the linefeed
-	outputSize := len(g.Dataset.Chars) + 2
-
+	inputSize := g.InputSize()
 	input := make([][]float64, 0)
 	for _, line := range poem {
 		jndex := rand.Intn(len(line))
@@ -63,18 +70,13 @@ func (g *Generator) GenSeq() (x, y [][]float64) {
 			}
 			input = append(input, cv)
 		}
-
-		linefeed := make([]float64, inputSize)
-		linefeed[inputSize-2] = 1
-		input = append(input, linefeed)
+		input = append(input, g.Linefeed())
 	}
-	endOfPoem := make([]float64, inputSize)
-	endOfPoem[inputSize-1] = 1
-	input = append(input, endOfPoem)
+	input = append(input, g.EndOfPoem())
 
-	output := make([][]float64, 0)
+	output := make([]int, 0)
 	for range input {
-		output = append(output, make([]float64, outputSize))
+		output = append(output, 0)
 	}
 
 	prevC := -1
@@ -86,24 +88,84 @@ func (g *Generator) GenSeq() (x, y [][]float64) {
 			}
 			input = append(input, cvi)
 			prevC = c
-			cv := make([]float64, outputSize)
-			cv[c] = 1
-			output = append(output, cv)
+
+			output = append(output, c)
 		}
 
 		cvi := make([]float64, inputSize)
 		cvi[prevC] = 1
 		input = append(input, cvi)
-		prevC = inputSize - 2
-		linefeed := make([]float64, outputSize)
-		linefeed[outputSize-1] = 1
-		output = append(output, linefeed)
+		prevC = len(g.Dataset.Chars) + indexLinefeed
+
+		output = append(output, len(g.Dataset.Chars)+indexLinefeed)
 	}
 
 	return input, output
+}
+
+func (g *Generator) VecFromString(s string) []float64 {
+	v := make([]float64, g.InputSize())
+	c, ok := g.Dataset.Chars[s]
+	if !ok {
+		return v
+	}
+	v[c] = 1
+	return v
+}
+
+func (g *Generator) Linefeed() []float64 {
+	v := make([]float64, g.InputSize())
+	v[len(g.Dataset.Chars)+indexLinefeed] = 1
+	return v
+}
+
+func (g *Generator) EndOfPoem() []float64 {
+	v := make([]float64, g.InputSize())
+	v[len(g.Dataset.Chars)+indexEndOfPoem] = 1
+	return v
+}
+
+func (g *Generator) InputSize() int {
+	return len(g.Dataset.Chars) + indexEndOfPoem + 1
+}
+
+func (g *Generator) OutputSize() int {
+	return len(g.Dataset.Chars) + indexLinefeed + 1
 }
 
 func (g *Generator) resample() {
 	g.indices = rand.Perm(len(g.indices))
 	g.offset = 0
 }
+
+func (g *Generator) SortOutput(output []float64) []Char {
+	chars := make([]Char, len(output))
+	for i, o := range output {
+		var s string
+		if i == 0 {
+			s = "Unknown"
+		} else if i == len(g.Dataset.Chars)+1 {
+			s = "Linefeed"
+		} else {
+			s = g.IndexToChar[i]
+		}
+		chars[i] = Char{S: s, Probability: o}
+	}
+	sort.Sort(ByProbabilityDesc(chars))
+	return chars
+}
+
+type Char struct {
+	S           string
+	Probability float64
+}
+
+func (c Char) String() string {
+	return fmt.Sprintf("{%s %.3g}", c.S, c.Probability)
+}
+
+type ByProbabilityDesc []Char
+
+func (a ByProbabilityDesc) Len() int           { return len(a) }
+func (a ByProbabilityDesc) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByProbabilityDesc) Less(i, j int) bool { return a[i].Probability >= a[j].Probability }

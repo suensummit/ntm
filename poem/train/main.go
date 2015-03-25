@@ -47,7 +47,7 @@ func main() {
 	http.HandleFunc("/PrintDebug", func(w http.ResponseWriter, r *http.Request) {
 		printDebugChan <- struct{}{}
 	})
-	port := 8085
+	port := 8082
 	go func() {
 		log.Printf("Listening on port %d", port)
 		if err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil); err != nil {
@@ -55,7 +55,7 @@ func main() {
 		}
 	}()
 
-	var seed int64 = 5
+	var seed int64 = 2
 	rand.Seed(seed)
 	log.Printf("seed: %d", seed)
 
@@ -63,12 +63,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	x, y := gen.GenSeq()
-	h1Size := 256
+	h1Size := 512
 	numHeads := 8
-	n := 1024
+	n := 4096
 	m := 24
-	c := ntm.NewEmptyController1(len(x[0]), len(y[0]), h1Size, numHeads, n, m)
+	c := ntm.NewEmptyController1(gen.InputSize(), gen.OutputSize(), h1Size, numHeads, n, m)
 	c.Weights(func(u *ntm.Unit) { u.Val = 1 * (rand.Float64() - 0.5) })
 
 	losses := make([]float64, 0)
@@ -79,9 +78,11 @@ func main() {
 	var bpcSum float64 = 0
 	for i := 1; ; i++ {
 		x, y := gen.GenSeq()
-		machines := rmsp.Train(x, y, 0.95, 0.5, 1e-3, 1e-3)
-		l := ntm.Loss(y, machines)
-		bpc := l / float64(len(y))
+		machines := rmsp.Train(x, &ntm.MultinomialModel{Y: y}, 0.95, 0.5, 1e-3, 1e-3)
+
+		numChar := len(y) / 2
+		l := ntm.MultinomialLoss(y[numChar+1:], machines[numChar+1:])
+		bpc := l / float64(numChar)
 		bpcSum += bpc
 
 		if i%10 == 0 {
@@ -118,7 +119,7 @@ func handleHTTP(c ntm.Controller, losses []float64, doPrint *bool) {
 	}
 }
 
-func printDebug(y [][]float64, machines []*ntm.NTM) {
+func printDebug(y []int, machines []*ntm.NTM) {
 	log.Printf("y: %+v", y)
 
 	log.Printf("pred: %s", ntm.Sprint2(ntm.Predictions(machines)))
