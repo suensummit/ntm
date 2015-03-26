@@ -81,7 +81,7 @@ func main() {
 		machines := rmsp.Train(x, &ntm.MultinomialModel{Y: y}, 0.95, 0.5, 1e-3, 1e-3)
 
 		numChar := len(y) / 2
-		l := ntm.MultinomialLoss(y[numChar+1:], machines[numChar+1:])
+		l := (&ntm.MultinomialModel{Y: y[numChar+1:]}).Loss(ntm.Predictions(machines[numChar+1:]))
 		bpc := l / float64(numChar)
 		bpcSum += bpc
 
