@@ -7,7 +7,7 @@ import (
 )
 
 func TestLogisticModel(t *testing.T) {
-	times := 10
+	times := 9
 	x := MakeTensor2(times, 4)
 	for i := 0; i < len(x); i++ {
 		for j := 0; j < len(x[i]); j++ {
@@ -25,7 +25,10 @@ func TestLogisticModel(t *testing.T) {
 	h1Size := 3
 	numHeads := 2
 	c := NewEmptyController1(len(x[0]), len(y[0]), h1Size, numHeads, n, m)
-	c.Weights(func(u *Unit) { u.Val = 2 * rand.Float64() })
+	weights := c.WeightsVal()
+	for i := range weights {
+		weights[i] = 2 * rand.Float64()
+	}
 
 	model := &LogisticModel{Y: y}
 	ForwardBackward(c, x, model)
@@ -33,7 +36,7 @@ func TestLogisticModel(t *testing.T) {
 }
 
 func TestMultinomialModel(t *testing.T) {
-	times := 10
+	times := 9
 	x := MakeTensor2(times, 4)
 	for i := 0; i < len(x); i++ {
 		for j := 0; j < len(x[i]); j++ {
@@ -50,7 +53,10 @@ func TestMultinomialModel(t *testing.T) {
 	h1Size := 3
 	numHeads := 2
 	c := NewEmptyController1(len(x[0]), outputSize, h1Size, numHeads, n, m)
-	c.Weights(func(u *Unit) { u.Val = 2 * rand.Float64() })
+	weights := c.WeightsVal()
+	for i := range weights {
+		weights[i] = 2 * rand.Float64()
+	}
 
 	model := &MultinomialModel{Y: y}
 	ForwardBackward(c, x, model)
@@ -62,60 +68,70 @@ type ControllerForward func(c Controller, reads [][]float64, x []float64) (predi
 
 func Controller1Forward(c1 Controller, reads [][]float64, x []float64) ([]float64, []*Head) {
 	c := c1.(*controller1)
-	h1Size := len(c.Wh1r)
-	h1 := make([]float64, h1Size)
-	for i := 0; i < len(h1); i++ {
+	readX := make([]float64, 0)
+	for _, read := range reads {
+		for _, r := range read {
+			readX = append(readX, r)
+		}
+	}
+	for _, xi := range x {
+		readX = append(readX, xi)
+	}
+	readX = append(readX, 1)
+	h1 := make([]float64, c.h1Size)
+	wh1 := c.wh1Val()
+	for i := range h1 {
 		var v float64 = 0
-		for j := 0; j < len(c.Wh1r[i]); j++ {
-			for k := 0; k < len(c.Wh1r[i][j]); k++ {
-				v += c.Wh1r[i][j][k].Val * reads[j][k]
-			}
+		for j, rx := range readX {
+			v += wh1.Data[i*wh1.Cols+j] * rx
 		}
-		for j := 0; j < len(c.Wh1x[i]); j++ {
-			v += c.Wh1x[i][j].Val * x[j]
-		}
-		v += c.Wh1b[i].Val
 		h1[i] = Sigmoid(v)
 	}
-	prediction := make([]float64, len(c.Wyh1))
-	for i := 0; i < len(prediction); i++ {
+
+	out := make([]float64, c.wyRows())
+	wy := c.wyVal()
+	h1 = append(h1, 1)
+	for i := range out {
 		var v float64 = 0
-		maxJ := len(c.Wyh1[i]) - 1
-		for j := 0; j < maxJ; j++ {
-			v += c.Wyh1[i][j].Val * h1[j]
+		for j, h := range h1 {
+			v += wy.Data[i*wy.Cols+j] * h
 		}
-		v += c.Wyh1[i][maxJ].Val
-		prediction[i] = v
+		out[i] = v
 	}
-	numHeads := len(c.Wh1r[0])
-	m := len(c.Wh1r[0][0])
-	heads := make([]*Head, numHeads)
-	for i := 0; i < len(heads); i++ {
-		heads[i] = NewHead(m)
-		for j := 0; j < len(heads[i].units); j++ {
-			maxK := len(c.Wuh1[i][j]) - 1
-			for k := 0; k < maxK; k++ {
-				heads[i].units[j].Val += c.Wuh1[i][j][k].Val * h1[k]
-			}
-			heads[i].units[j].Val += c.Wuh1[i][j][maxK].Val
+	prediction := make([]float64, c.ySize)
+	for i := range prediction {
+		prediction[i] = out[i]
+	}
+	heads := make([]*Head, c.numHeads)
+	for i := range heads {
+		heads[i] = NewHead(c.memoryM)
+		hul := len(heads[i].units)
+		for j := range heads[i].units {
+			heads[i].units[j].Val += out[c.ySize+i*hul+j]
 		}
 	}
+
 	return prediction, heads
 }
 
 func loss(c Controller, forward ControllerForward, in [][]float64, model DensityModel) float64 {
 	// Initialize memory as in the function ForwardBackward
-	mem := c.Mtm1BiasV().Top
-	wtm1Bs := c.Wtm1BiasV()
+	mem := makeTensorUnit2(c.MemoryN(), c.MemoryM())
+	for i := range mem {
+		for j := range mem[i] {
+			mem[i][j].Val = c.Mtm1BiasVal()[j*c.MemoryN()+i]
+		}
+	}
 	wtm1s := make([]*refocus, c.NumHeads())
 	for i := range wtm1s {
 		wtm1s[i] = &refocus{Top: make([]Unit, c.MemoryN())}
+		bs := c.Wtm1BiasVal()[i*c.MemoryN() : (i+1)*c.MemoryN()]
 		var sum float64 = 0
-		for j := range wtm1Bs[i] {
-			wtm1s[i].Top[j].Val = math.Exp(wtm1Bs[i][j].Top.Val)
+		for j, b := range bs {
+			wtm1s[i].Top[j].Val = math.Exp(b)
 			sum += wtm1s[i].Top[j].Val
 		}
-		for j := range wtm1Bs[i] {
+		for j := range bs {
 			wtm1s[i].Top[j].Val = wtm1s[i].Top[j].Val / sum
 		}
 	}
@@ -159,21 +175,22 @@ func computeDensity(timestep int, pred []float64, model DensityModel) []float64 
 func checkGradients(t *testing.T, c Controller, forward ControllerForward, in [][]float64, model DensityModel) {
 	lx := loss(c, forward, in, model)
 
-	c.WeightsVerbose(func(tag string, w *Unit) {
-		x := w.Val
+	for i, x := range c.WeightsVal() {
 		h := machineEpsilonSqrt * math.Max(math.Abs(x), 1)
 		xph := x + h
-		w.Val = xph
+		c.WeightsVal()[i] = xph
 		lxph := loss(c, forward, in, model)
-		w.Val = x
+		c.WeightsVal()[i] = x
 		grad := (lxph - lx) / (xph - x)
 
-		if math.IsNaN(grad) || math.Abs(grad-w.Grad) > 1e-5 {
-			t.Errorf("wrong %s gradient expected %f, got %f", tag, grad, w.Grad)
+		wGrad := c.WeightsGrad()[i]
+		tag := c.WeightsDesc(i)
+		if math.IsNaN(grad) || math.Abs(grad-wGrad) > 1e-5 {
+			t.Errorf("wrong %s gradient expected %f, got %f", tag, grad, wGrad)
 		} else {
-			t.Logf("OK %s gradient expected %f, got %f", tag, grad, w.Grad)
+			t.Logf("OK %s gradient expected %f, got %f", tag, grad, wGrad)
 		}
-	})
+	}
 }
 
 func transformMemFloat64(memFloat64 [][]float64) [][]Unit {
