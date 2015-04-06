@@ -11,12 +11,7 @@ import (
 	"math"
 
 	"github.com/gonum/blas/blas64"
-	"github.com/gonum/blas/cgo"
 )
-
-func init() {
-	blas64.Use(cgo.Implementation{})
-}
 
 // A Head is a read write head on a memory bank.
 // It carriess information that is required to operate on a memory bank according to the NTM architecture.
@@ -287,16 +282,15 @@ func NewSGDMomentum(c Controller) *SGDMomentum {
 	return &s
 }
 
-// TODO
 func (s *SGDMomentum) Train(x [][]float64, y DensityModel, alpha, mt float64) []*NTM {
 	machines := ForwardBackward(s.C, x, y)
-	//i := 0
-	//s.C.Weights(func(w *Unit) {
-	//	d := -alpha*w.Grad + mt*s.PrevD[i]
-	//	w.Val += d
-	//	s.PrevD[i] = d
-	//	i++
-	//})
+
+	weights := s.C.WeightsVal()
+	for i, grad := range s.C.WeightsGrad() {
+		d := -alpha*grad + mt*s.PrevD[i]
+		weights[i] += d
+		s.PrevD[i] = d
+	}
 	return machines
 }
 

@@ -54,7 +54,6 @@ func (s *similarityCircuit) Backward() {
 }
 
 type betaSimilarity struct {
-	//Beta *Unit // Beta is assumed to be in the range (-Inf, Inf)
 	BetaVal  *float64
 	BetaGrad *float64
 
@@ -69,7 +68,7 @@ func newBetaSimilarity(betaVal *float64, betaGrad *float64, s *similarityCircuit
 		BetaVal:  betaVal,
 		BetaGrad: betaGrad,
 		S:        s,
-		b:        math.Exp(*betaVal),
+		b:        math.Exp(*betaVal), // Beta is in the range (-Inf, Inf)
 	}
 	bs.Top.Val = bs.b * s.TopVal
 	return &bs
@@ -119,7 +118,6 @@ func (s *contentAddressing) Backward() {
 }
 
 type gatedWeighting struct {
-	//G    *Unit
 	GVal  *float64
 	GGrad *float64
 
@@ -162,7 +160,6 @@ func (wg *gatedWeighting) Backward() {
 }
 
 type shiftedWeighting struct {
-	//S   *Unit
 	SVal  *float64
 	SGrad *float64
 
@@ -221,7 +218,6 @@ func (sw *shiftedWeighting) Backward() {
 }
 
 type refocus struct {
-	//Gamma *Unit
 	GammaVal  *float64
 	GammaGrad *float64
 
@@ -299,7 +295,7 @@ func (rf *refocus) Backward() {
 type memRead struct {
 	W      *refocus
 	Memory *writtenMemory
-	//Top    []Unit
+
 	TopVal  []float64
 	TopGrad []float64
 }
