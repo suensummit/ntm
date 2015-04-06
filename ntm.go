@@ -159,8 +159,8 @@ func ForwardBackward(c Controller, in [][]float64, out DensityModel) []*NTM {
 	// Compute gradients for the bias values of the initial memory and weights.
 	for i := range reads {
 		reads[i].Backward()
-		for j := range reads[i].W.Top {
-			cas[i].Top[j].Grad += reads[i].W.Top[j].Grad
+		for j := range reads[i].W.TopGrad {
+			cas[i].Top[j].Grad += reads[i].W.TopGrad[j]
 		}
 		cas[i].Backward()
 	}
@@ -170,12 +170,6 @@ func ForwardBackward(c Controller, in [][]float64, out DensityModel) []*NTM {
 	for i := range cas {
 		for j, bs := range cas[i].Units {
 			cwtm1[i*c.MemoryN()+j] = bs.Top.Grad
-		}
-	}
-	cmtm1 := c.Mtm1BiasGrad()
-	for i, mRow := range reads[0].Memory.Top {
-		for j, m := range mRow {
-			cmtm1[j*c.MemoryN()+i] = m.Grad
 		}
 	}
 
@@ -194,12 +188,10 @@ func MakeEmptyNTM(c Controller) (*NTM, []*memRead, []*contentAddressing) {
 		}
 	}
 
-	cmtm1 := c.Mtm1BiasVal()
-	mtm1 := &writtenMemory{Top: makeTensorUnit2(c.MemoryN(), c.MemoryM())}
-	for i := range mtm1.Top {
-		for j := range mtm1.Top[i] {
-			mtm1.Top[i][j].Val = cmtm1[j*c.MemoryN()+i]
-		}
+	mtm1 := &writtenMemory{
+		N:       c.MemoryN(),
+		TopVal:  c.Mtm1BiasVal(),
+		TopGrad: c.Mtm1BiasGrad(),
 	}
 
 	wtm1s := make([]*refocus, c.NumHeads())
@@ -207,9 +199,12 @@ func MakeEmptyNTM(c Controller) (*NTM, []*memRead, []*contentAddressing) {
 	cas := make([]*contentAddressing, c.NumHeads())
 	for i := range reads {
 		cas[i] = newContentAddressing(unws[i])
-		wtm1s[i] = &refocus{Top: make([]Unit, c.MemoryN())}
-		for j := range wtm1s[i].Top {
-			wtm1s[i].Top[j].Val = cas[i].Top[j].Val
+		wtm1s[i] = &refocus{
+			TopVal:  make([]float64, c.MemoryN()),
+			TopGrad: make([]float64, c.MemoryN()),
+		}
+		for j := range wtm1s[i].TopVal {
+			wtm1s[i].TopVal[j] = cas[i].Top[j].Val
 		}
 		reads[i] = newMemRead(wtm1s[i], mtm1)
 	}
@@ -240,9 +235,9 @@ func HeadWeights(machines []*NTM) [][][]float64 {
 	for i := range hws {
 		hws[i] = make([][]float64, len(machines))
 		for t, m := range machines {
-			hws[i][t] = make([]float64, len(m.memOp.W[i].Top))
-			for j, w := range m.memOp.W[i].Top {
-				hws[i][t][j] = w.Val
+			hws[i][t] = make([]float64, len(m.memOp.W[i].TopVal))
+			for j, w := range m.memOp.W[i].TopVal {
+				hws[i][t][j] = w
 			}
 		}
 	}

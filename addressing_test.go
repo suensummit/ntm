@@ -19,10 +19,14 @@ const (
 func TestCircuit(t *testing.T) {
 	n := 3
 	m := 2
-	memory := &writtenMemory{Top: makeTensorUnit2(n, m)}
-	for i := 0; i < len(memory.Top); i++ {
-		for j := 0; j < len(memory.Top[i]); j++ {
-			memory.Top[i][j].Val = rand.Float64()
+	memory := &writtenMemory{
+		N:       n,
+		TopVal:  make([]float64, n*m),
+		TopGrad: make([]float64, n*m),
+	}
+	for i := 0; i < n; i++ {
+		for j := 0; j < m; j++ {
+			memory.TopVal[i*m+j] = rand.Float64()
 		}
 	}
 	heads := make([]*Head, 2)
@@ -39,11 +43,11 @@ func TestCircuit(t *testing.T) {
 
 	circuit := newMemOp(heads, memory)
 	for i := 0; i < len(circuit.W); i++ {
-		for j := 0; j < len(circuit.W[i].Top); j++ {
+		for j := 0; j < len(circuit.W[i].TopGrad); j++ {
 			if i == 0 && j == 0 {
-				circuit.W[i].Top[j].Grad += w11OutputGradient
+				circuit.W[i].TopGrad[j] += w11OutputGradient
 			} else {
-				circuit.W[i].Top[j].Grad += outputGradient
+				circuit.W[i].TopGrad[j] += outputGradient
 			}
 		}
 	}
@@ -52,21 +56,28 @@ func TestCircuit(t *testing.T) {
 			circuit.R[i].Top[j].Grad += outputGradient
 		}
 	}
-	for i := 0; i < len(circuit.WM.Top); i++ {
-		for j := 0; j < len(circuit.WM.Top[i]); j++ {
-			circuit.WM.Top[i][j].Grad += outputGradient
+	for i := 0; i < n; i++ {
+		for j := 0; j < m; j++ {
+			circuit.WM.TopGrad[i*m+j] += outputGradient
 		}
 	}
 	circuit.Backward()
 
-	ax := addressing(heads, memory.Top)
-	checkGamma(t, heads, memory.Top, ax)
-	checkS(t, heads, memory.Top, ax)
-	checkG(t, heads, memory.Top, ax)
-	checkWtm1(t, heads, memory.Top, ax)
-	checkBeta(t, heads, memory.Top, ax)
-	checkK(t, heads, memory.Top, ax)
-	checkMemory(t, heads, memory.Top, ax)
+	memoryTop := makeTensorUnit2(n, m)
+	for i := 0; i < n; i++ {
+		for j := 0; j < m; j++ {
+			memoryTop[i][j].Val = memory.TopVal[i*m+j]
+			memoryTop[i][j].Grad = memory.TopGrad[i*m+j]
+		}
+	}
+	ax := addressing(heads, memoryTop)
+	checkGamma(t, heads, memoryTop, ax)
+	checkS(t, heads, memoryTop, ax)
+	checkG(t, heads, memoryTop, ax)
+	checkWtm1(t, heads, memoryTop, ax)
+	checkBeta(t, heads, memoryTop, ax)
+	checkK(t, heads, memoryTop, ax)
+	checkMemory(t, heads, memoryTop, ax)
 }
 
 func addressing(heads []*Head, memory [][]Unit) float64 {
@@ -91,7 +102,7 @@ func doAddressing(heads []*Head, memory [][]Unit) (weights [][]float64, reads []
 		// Content-based, location-based addressing gate
 		g := Sigmoid(h.G().Val)
 		for j := 0; j < len(wc); j++ {
-			wc[j] = g*wc[j] + (1-g)*h.Wtm1.Top[j].Val
+			wc[j] = g*wc[j] + (1-g)*h.Wtm1.TopVal[j]
 		}
 
 		// Location-based addressing
@@ -243,20 +254,20 @@ func checkBeta(t *testing.T, heads []*Head, memory [][]Unit, ax float64) {
 
 func checkWtm1(t *testing.T, heads []*Head, memory [][]Unit, ax float64) {
 	for k, hd := range heads {
-		for i := 0; i < len(hd.Wtm1.Top); i++ {
-			x := hd.Wtm1.Top[i].Val
+		for i := 0; i < len(hd.Wtm1.TopVal); i++ {
+			x := hd.Wtm1.TopVal[i]
 			h := machineEpsilonSqrt * math.Max(math.Abs(x), 1)
 			xph := x + h
-			hd.Wtm1.Top[i].Val = xph
+			hd.Wtm1.TopVal[i] = xph
 			dx := xph - x
 			axph := addressing(heads, memory)
 			grad := (axph - ax) / dx
-			hd.Wtm1.Top[i].Val = x
+			hd.Wtm1.TopVal[i] = x
 
-			if math.IsNaN(grad) || math.Abs(grad-hd.Wtm1.Top[i].Grad) > 1e-5 {
-				t.Fatalf("wrong wtm1[%d] gradient expected %f, got %f", i, grad, hd.Wtm1.Top[i].Grad)
+			if math.IsNaN(grad) || math.Abs(grad-hd.Wtm1.TopGrad[i]) > 1e-5 {
+				t.Fatalf("wrong wtm1[%d] gradient expected %f, got %f", i, grad, hd.Wtm1.TopGrad[i])
 			} else {
-				t.Logf("OK wtm1[%d][%d] agradient %f %f", k, i, grad, hd.Wtm1.Top[i].Grad)
+				t.Logf("OK wtm1[%d][%d] agradient %f %f", k, i, grad, hd.Wtm1.TopGrad[i])
 			}
 		}
 	}
@@ -320,14 +331,17 @@ func checkGamma(t *testing.T, heads []*Head, memory [][]Unit, ax float64) {
 }
 
 func randomRefocus(n int) *refocus {
-	w := make([]Unit, n)
+	w := make([]float64, n)
 	var sum float64 = 0
 	for i := 0; i < len(w); i++ {
-		w[i].Val = math.Abs(rand.Float64())
-		sum += w[i].Val
+		w[i] = math.Abs(rand.Float64())
+		sum += w[i]
 	}
 	for i := 0; i < len(w); i++ {
-		w[i].Val = w[i].Val / sum
+		w[i] = w[i] / sum
 	}
-	return &refocus{Top: w}
+	return &refocus{
+		TopVal:  w,
+		TopGrad: make([]float64, n),
+	}
 }

@@ -119,20 +119,23 @@ func loss(c Controller, forward ControllerForward, in [][]float64, model Density
 	mem := makeTensorUnit2(c.MemoryN(), c.MemoryM())
 	for i := range mem {
 		for j := range mem[i] {
-			mem[i][j].Val = c.Mtm1BiasVal()[j*c.MemoryN()+i]
+			mem[i][j].Val = c.Mtm1BiasVal()[i*c.MemoryM()+j]
 		}
 	}
 	wtm1s := make([]*refocus, c.NumHeads())
 	for i := range wtm1s {
-		wtm1s[i] = &refocus{Top: make([]Unit, c.MemoryN())}
+		wtm1s[i] = &refocus{
+			TopVal:  make([]float64, c.MemoryN()),
+			TopGrad: make([]float64, c.MemoryN()),
+		}
 		bs := c.Wtm1BiasVal()[i*c.MemoryN() : (i+1)*c.MemoryN()]
 		var sum float64 = 0
 		for j, b := range bs {
-			wtm1s[i].Top[j].Val = math.Exp(b)
-			sum += wtm1s[i].Top[j].Val
+			wtm1s[i].TopVal[j] = math.Exp(b)
+			sum += wtm1s[i].TopVal[j]
 		}
 		for j := range bs {
-			wtm1s[i].Top[j].Val = wtm1s[i].Top[j].Val / sum
+			wtm1s[i].TopVal[j] = wtm1s[i].TopVal[j] / sum
 		}
 	}
 	reads := MakeTensor2(c.NumHeads(), c.MemoryM())
@@ -140,7 +143,7 @@ func loss(c Controller, forward ControllerForward, in [][]float64, model Density
 		for j := 0; j < len(reads[i]); j++ {
 			var v float64 = 0
 			for k := 0; k < len(mem); k++ {
-				v += wtm1s[i].Top[k].Val * mem[k][j].Val
+				v += wtm1s[i].TopVal[k] * mem[k][j].Val
 			}
 			reads[i][j] = v
 		}
@@ -206,9 +209,12 @@ func transformMemFloat64(memFloat64 [][]float64) [][]Unit {
 func transformWSFloat64(wsFloat64 [][]float64) []*refocus {
 	wtm1s := make([]*refocus, len(wsFloat64))
 	for i := 0; i < len(wtm1s); i++ {
-		wtm1s[i] = &refocus{Top: make([]Unit, len(wsFloat64[i]))}
-		for j := 0; j < len(wtm1s[i].Top); j++ {
-			wtm1s[i].Top[j].Val = wsFloat64[i][j]
+		wtm1s[i] = &refocus{
+			TopVal:  make([]float64, len(wsFloat64[i])),
+			TopGrad: make([]float64, len(wsFloat64[i])),
+		}
+		for j := 0; j < len(wtm1s[i].TopVal); j++ {
+			wtm1s[i].TopVal[j] = wsFloat64[i][j]
 		}
 	}
 	return wtm1s
