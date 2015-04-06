@@ -18,8 +18,9 @@ type controller1 struct {
 	H1Val  []float64
 	H1Grad []float64
 
-	y     []Unit
-	heads []*Head
+	heads   []*Head
+	outVal  []float64
+	outGrad []float64
 
 	numHeads int
 	memoryM  int
@@ -125,8 +126,12 @@ func (c *controller1) Heads() []*Head {
 	return c.heads
 }
 
-func (c *controller1) Y() []Unit {
-	return c.y
+func (c *controller1) YVal() []float64 {
+	return c.outVal[0:c.ySize]
+}
+
+func (c *controller1) YGrad() []float64 {
+	return c.outGrad[0:c.ySize]
 }
 
 func (old *controller1) Forward(reads []*memRead, x []float64) Controller {
@@ -137,8 +142,9 @@ func (old *controller1) Forward(reads []*memRead, x []float64) Controller {
 		X:           x,
 		H1Val:       make([]float64, old.h1Size+1),
 		H1Grad:      make([]float64, old.h1Size+1),
-		y:           make([]Unit, old.ySize),
 		heads:       make([]*Head, len(reads)),
+		outVal:      make([]float64, old.wyRows()),
+		outGrad:     make([]float64, old.wyRows()),
 
 		numHeads: old.numHeads,
 		memoryM:  old.memoryM,
@@ -150,9 +156,7 @@ func (old *controller1) Forward(reads []*memRead, x []float64) Controller {
 
 	ud := make([]float64, c.wh1Cols())
 	for i, read := range reads {
-		for j, r := range read.Top {
-			ud[i*c.memoryM+j] = r.Val
-		}
+		copy(ud[i*c.memoryM:], read.TopVal)
 	}
 	copy(ud[c.numHeads*c.memoryM:], c.X)
 	ud[c.numHeads*c.memoryM+c.xSize] = 1
@@ -166,38 +170,23 @@ func (old *controller1) Forward(reads []*memRead, x []float64) Controller {
 
 	c.H1Val[c.h1Size] = 1
 	h1 = blas64.Vector{Inc: 1, Data: c.H1Val}
-	out := blas64.Vector{Inc: 1, Data: make([]float64, c.wyRows())}
-	blas64.Gemv(blas.NoTrans, 1, c.wyVal(), h1, 1, out)
+	outV := blas64.Vector{Inc: 1, Data: c.outVal}
+	blas64.Gemv(blas.NoTrans, 1, c.wyVal(), h1, 1, outV)
 
-	for i, v := range out.Data[0:c.ySize] {
-		c.y[i].Val = v
-	}
 	hul := headUnitsLen(c.memoryM)
 	for i := range c.heads {
 		head := NewHead(c.memoryM)
 		c.heads[i] = head
 		start := c.ySize + i*hul
-		for j, v := range out.Data[start : start+hul] {
-			head.units[j].Val = v
-		}
+		head.vals = c.outVal[start : start+hul]
+		head.grads = c.outGrad[start : start+hul]
 	}
 
 	return &c
 }
 
 func (c *controller1) Backward() {
-	out := blas64.Vector{Inc: 1, Data: make([]float64, c.wyRows())}
-	for i, v := range c.y {
-		out.Data[i] = v.Grad
-	}
-	hul := headUnitsLen(c.memoryM)
-	for i, head := range c.heads {
-		start := c.ySize + i*hul
-		for j, v := range head.units {
-			out.Data[start+j] = v.Grad
-		}
-	}
-
+	out := blas64.Vector{Inc: 1, Data: c.outGrad}
 	h1Val := blas64.Vector{Inc: 1, Data: c.H1Val}
 	h1Grad := blas64.Vector{Inc: 1, Data: c.H1Grad}
 	blas64.Gemv(blas.Trans, 1, c.wyVal(), out, 1, h1Grad)
@@ -214,9 +203,7 @@ func (c *controller1) Backward() {
 	blas64.Ger(1, h1Grad, c.ReadsXVal, c.wh1Grad())
 
 	for i, read := range c.Reads {
-		for j, g := range u.Data[i*c.memoryM : (i+1)*c.memoryM] {
-			read.Top[j].Grad = g
-		}
+		copy(read.TopGrad, u.Data[i*c.memoryM:(i+1)*c.memoryM])
 	}
 }
 

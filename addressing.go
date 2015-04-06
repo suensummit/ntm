@@ -9,67 +9,75 @@ import (
 )
 
 type similarityCircuit struct {
-	U   []Unit
-	V   []Unit
-	Top Unit
+	UVal    []float64
+	UGrad   []float64
+	VVal    []float64
+	VGrad   []float64
+	TopVal  float64
+	TopGrad float64
 
 	UV    float64
 	Unorm float64
 	Vnorm float64
 }
 
-func newSimilarityCircuit(u, v []Unit) *similarityCircuit {
+func newSimilarityCircuit(uVal, uGrad, vVal, vGrad []float64) *similarityCircuit {
 	s := similarityCircuit{
-		U: u,
-		V: v,
+		UVal:  uVal,
+		UGrad: uGrad,
+		VVal:  vVal,
+		VGrad: vGrad,
 	}
-	for i := 0; i < len(u); i++ {
-		s.UV += u[i].Val * v[i].Val
-		s.Unorm += u[i].Val * u[i].Val
-		s.Vnorm += v[i].Val * v[i].Val
-	}
-	s.Unorm = math.Sqrt(s.Unorm)
-	s.Vnorm = math.Sqrt(s.Vnorm)
-	s.Top.Val = s.UV / (s.Unorm * s.Vnorm)
-	if math.IsNaN(s.Top.Val) {
-		log.Printf("u: %+v, v: %+v", u, v)
-		panic("")
-	}
+	u := blas64.Vector{Inc: 1, Data: uVal}
+	v := blas64.Vector{Inc: 1, Data: vVal}
+	s.UV = blas64.Dot(len(uVal), u, v)
+	s.Unorm = blas64.Nrm2(len(uVal), u)
+	s.Vnorm = blas64.Nrm2(len(vVal), v)
+	s.TopVal = s.UV / (s.Unorm * s.Vnorm)
 	return &s
 }
 
 func (s *similarityCircuit) Backward() {
 	uvuu := s.UV / (s.Unorm * s.Unorm)
 	uvvv := s.UV / (s.Vnorm * s.Vnorm)
-	uvg := s.Top.Grad / (s.Unorm * s.Vnorm)
-	for i, u := range s.U {
-		v := s.V[i].Val
-		s.U[i].Grad += (v - u.Val*uvuu) * uvg
-		s.V[i].Grad += (u.Val - v*uvvv) * uvg
-	}
+	uvg := s.TopGrad / (s.Unorm * s.Vnorm)
+	u := blas64.Vector{Inc: 1, Data: s.UVal}
+	v := blas64.Vector{Inc: 1, Data: s.VVal}
+
+	ugrad := blas64.Vector{Inc: 1, Data: s.UGrad}
+	blas64.Axpy(len(s.UGrad), uvg, v, ugrad)
+	blas64.Axpy(len(s.UGrad), -uvuu*uvg, u, ugrad)
+
+	vgrad := blas64.Vector{Inc: 1, Data: s.VGrad}
+	blas64.Axpy(len(s.VGrad), uvg, u, vgrad)
+	blas64.Axpy(len(s.VGrad), -uvvv*uvg, v, vgrad)
 }
 
 type betaSimilarity struct {
-	Beta *Unit // Beta is assumed to be in the range (-Inf, Inf)
-	S    *similarityCircuit
-	Top  Unit
+	//Beta *Unit // Beta is assumed to be in the range (-Inf, Inf)
+	BetaVal  *float64
+	BetaGrad *float64
+
+	S   *similarityCircuit
+	Top Unit
 
 	b float64
 }
 
-func newBetaSimilarity(beta *Unit, s *similarityCircuit) *betaSimilarity {
+func newBetaSimilarity(betaVal *float64, betaGrad *float64, s *similarityCircuit) *betaSimilarity {
 	bs := betaSimilarity{
-		Beta: beta,
-		S:    s,
-		b:    math.Exp(beta.Val),
+		BetaVal:  betaVal,
+		BetaGrad: betaGrad,
+		S:        s,
+		b:        math.Exp(*betaVal),
 	}
-	bs.Top.Val = bs.b * s.Top.Val
+	bs.Top.Val = bs.b * s.TopVal
 	return &bs
 }
 
 func (bs *betaSimilarity) Backward() {
-	bs.Beta.Grad += bs.S.Top.Val * bs.b * bs.Top.Grad
-	bs.S.Top.Grad += bs.b * bs.Top.Grad
+	*bs.BetaGrad += bs.S.TopVal * bs.b * bs.Top.Grad
+	bs.S.TopGrad += bs.b * bs.Top.Grad
 }
 
 type contentAddressing struct {
@@ -111,20 +119,24 @@ func (s *contentAddressing) Backward() {
 }
 
 type gatedWeighting struct {
-	G    *Unit
+	//G    *Unit
+	GVal  *float64
+	GGrad *float64
+
 	WC   *contentAddressing
 	Wtm1 *refocus // the weights at time t-1
 	Top  []Unit
 }
 
-func newGatedWeighting(g *Unit, wc *contentAddressing, wtm1 *refocus) *gatedWeighting {
+func newGatedWeighting(gVal *float64, gGrad *float64, wc *contentAddressing, wtm1 *refocus) *gatedWeighting {
 	wg := gatedWeighting{
-		G:    g,
-		WC:   wc,
-		Wtm1: wtm1,
-		Top:  make([]Unit, len(wc.Top)),
+		GVal:  gVal,
+		GGrad: gGrad,
+		WC:    wc,
+		Wtm1:  wtm1,
+		Top:   make([]Unit, len(wc.Top)),
 	}
-	gt := Sigmoid(g.Val)
+	gt := Sigmoid(*gVal)
 	for i := 0; i < len(wg.Top); i++ {
 		wg.Top[i].Val = gt*wc.Top[i].Val + (1-gt)*wtm1.TopVal[i]
 	}
@@ -132,13 +144,13 @@ func newGatedWeighting(g *Unit, wc *contentAddressing, wtm1 *refocus) *gatedWeig
 }
 
 func (wg *gatedWeighting) Backward() {
-	gt := Sigmoid(wg.G.Val)
+	gt := Sigmoid(*wg.GVal)
 
 	var grad float64 = 0
 	for i := 0; i < len(wg.Top); i++ {
 		grad += (wg.WC.Top[i].Val - wg.Wtm1.TopVal[i]) * wg.Top[i].Grad
 	}
-	wg.G.Grad += grad * gt * (1 - gt)
+	*wg.GGrad += grad * gt * (1 - gt)
 
 	for i := 0; i < len(wg.WC.Top); i++ {
 		wg.WC.Top[i].Grad += gt * wg.Top[i].Grad
@@ -150,17 +162,21 @@ func (wg *gatedWeighting) Backward() {
 }
 
 type shiftedWeighting struct {
-	S   *Unit
+	//S   *Unit
+	SVal  *float64
+	SGrad *float64
+
 	Z   float64
 	WG  *gatedWeighting
 	Top []Unit
 }
 
-func newShiftedWeighting(s *Unit, wg *gatedWeighting) *shiftedWeighting {
+func newShiftedWeighting(sVal *float64, sGrad *float64, wg *gatedWeighting) *shiftedWeighting {
 	sw := shiftedWeighting{
-		S:   s,
-		WG:  wg,
-		Top: make([]Unit, len(wg.Top)),
+		SVal:  sVal,
+		SGrad: sGrad,
+		WG:    wg,
+		Top:   make([]Unit, len(wg.Top)),
 	}
 
 	n := len(sw.WG.Top)
@@ -170,7 +186,7 @@ func newShiftedWeighting(s *Unit, wg *gatedWeighting) *shiftedWeighting {
 	//}
 
 	//sw.Z = float64(n) * Sigmoid(s.Val)
-	shift := (2*Sigmoid(s.Val) - 1) // * maxShift
+	shift := (2*Sigmoid(*sVal) - 1) // * maxShift
 	sw.Z = math.Mod(shift+float64(n), float64(n))
 
 	simj := 1 - (sw.Z - math.Floor(sw.Z))
@@ -192,10 +208,10 @@ func (sw *shiftedWeighting) Backward() {
 		imj := (i + int(sw.Z)) % n
 		grad += (-sw.WG.Top[imj].Val + sw.WG.Top[(imj+1)%n].Val) * sw.Top[i].Grad
 	}
-	sig := Sigmoid(sw.S.Val)
+	sig := Sigmoid(*sw.SVal)
 	grad = grad * 2 * sig * (1 - sig)
 	// grad = grad * sw.Z * (1 - sw.Z/float64(n))
-	sw.S.Grad += grad
+	*sw.SGrad += grad
 
 	simj := 1 - (sw.Z - math.Floor(sw.Z))
 	for i := 0; i < len(sw.WG.Top); i++ {
@@ -205,8 +221,11 @@ func (sw *shiftedWeighting) Backward() {
 }
 
 type refocus struct {
-	Gamma *Unit
-	SW    *shiftedWeighting
+	//Gamma *Unit
+	GammaVal  *float64
+	GammaGrad *float64
+
+	SW *shiftedWeighting
 
 	TopVal  []float64
 	TopGrad []float64
@@ -214,13 +233,14 @@ type refocus struct {
 	g float64
 }
 
-func newRefocus(gamma *Unit, sw *shiftedWeighting) *refocus {
+func newRefocus(gammaVal *float64, gammaGrad *float64, sw *shiftedWeighting) *refocus {
 	rf := refocus{
-		Gamma:   gamma,
-		SW:      sw,
-		TopVal:  make([]float64, len(sw.Top)),
-		TopGrad: make([]float64, len(sw.Top)),
-		g:       math.Log(math.Exp(gamma.Val)+1) + 1,
+		GammaVal:  gammaVal,
+		GammaGrad: gammaGrad,
+		SW:        sw,
+		TopVal:    make([]float64, len(sw.Top)),
+		TopGrad:   make([]float64, len(sw.Top)),
+		g:         math.Log(math.Exp(*gammaVal)+1) + 1,
 	}
 	var sum float64 = 0
 	for i := 0; i < len(rf.TopVal); i++ {
@@ -267,8 +287,8 @@ func (rf *refocus) backwardGamma() {
 		}
 		grad += rf.TopGrad[i] * (topV * (lns[i] - lnexps))
 	}
-	grad = grad / (1 + math.Exp(-rf.Gamma.Val))
-	rf.Gamma.Grad += grad
+	grad = grad / (1 + math.Exp(-(*rf.GammaVal)))
+	*rf.GammaGrad += grad
 }
 
 func (rf *refocus) Backward() {
@@ -279,24 +299,25 @@ func (rf *refocus) Backward() {
 type memRead struct {
 	W      *refocus
 	Memory *writtenMemory
-	Top    []Unit
+	//Top    []Unit
+	TopVal  []float64
+	TopGrad []float64
 }
 
 func newMemRead(w *refocus, memory *writtenMemory) *memRead {
 	m := len(memory.TopVal) / memory.N
 	r := memRead{
-		W:      w,
-		Memory: memory,
-		Top:    make([]Unit, m),
+		W:       w,
+		Memory:  memory,
+		TopVal:  make([]float64, m),
+		TopGrad: make([]float64, m),
 	}
 
-	for i := 0; i < len(r.Top); i++ {
-		var v float64 = 0
-		for j := 0; j < len(w.TopVal); j++ {
-			v += w.TopVal[j] * memory.TopVal[j*m+i]
-		}
-		r.Top[i].Val = v
-	}
+	weights := blas64.Vector{Inc: 1, Data: w.TopVal}
+	mem := blas64.General{Rows: memory.N, Cols: m, Stride: m, Data: memory.TopVal}
+	top := blas64.Vector{Inc: 1, Data: r.TopVal}
+	blas64.Gemv(blas.Trans, 1, mem, weights, 1, top)
+
 	return &r
 }
 
@@ -304,20 +325,14 @@ func (r *memRead) Backward() {
 	n := r.Memory.N
 	m := len(r.Memory.TopVal) / n
 
-	for i := 0; i < n; i++ {
-		var grad float64 = 0
-		for j := 0; j < m; j++ {
-			grad += r.Top[j].Grad * r.Memory.TopVal[i*m+j]
-		}
-		r.W.TopGrad[i] += grad
-	}
+	grad := blas64.Vector{Inc: 1, Data: r.TopGrad}
+	memVal := blas64.General{Rows: n, Cols: m, Stride: m, Data: r.Memory.TopVal}
+	weightsGrad := blas64.Vector{Inc: 1, Data: r.W.TopGrad}
+	blas64.Gemv(blas.NoTrans, 1, memVal, grad, 1, weightsGrad)
 
-	for i := 0; i < n; i++ {
-		w := r.W.TopVal[i]
-		for j := 0; j < m; j++ {
-			r.Memory.TopGrad[i*m+j] += r.Top[j].Grad * w
-		}
-	}
+	memGrad := blas64.General{Rows: n, Cols: m, Stride: m, Data: r.Memory.TopGrad}
+	weights := blas64.Vector{Inc: 1, Data: r.W.TopVal}
+	blas64.Ger(1, weights, grad, memGrad)
 }
 
 type writtenMemory struct {
@@ -353,11 +368,10 @@ func newWrittenMemory(ws []*refocus, heads []*Head, mtm1 *writtenMemory) *writte
 	for i, h := range wm.Heads {
 		erase := wm.erase[i]
 		add := wm.add[i]
-		eraseVec := h.EraseVector()
-		addVec := h.AddVector()
-		for j, e := range eraseVec {
-			erase[j] = Sigmoid(e.Val)
-			add[j] = Sigmoid(addVec[j].Val)
+		addVec := h.AddVal()
+		for j, e := range h.EraseVal() {
+			erase[j] = Sigmoid(e)
+			add[j] = Sigmoid(addVec[j])
 		}
 	}
 
@@ -412,7 +426,7 @@ func (wm *writtenMemory) backwardWErase() {
 
 	mgrad := make([]float64, n*m)
 	mGradG := blas64.General{Rows: n, Cols: m, Stride: m, Data: mgrad}
-	hEraseGrad := blas64.Vector{Inc: 1, Data: make([]float64, len(wm.Heads[0].EraseVector()))}
+	hEraseGrad := blas64.Vector{Inc: 1, Data: make([]float64, m)}
 	for i, weights := range wm.Ws {
 		erase := wm.erase[i]
 		add := wm.add[i]
@@ -431,13 +445,13 @@ func (wm *writtenMemory) backwardWErase() {
 		blas64.Gemv(blas.NoTrans, -1, mGradG, eraseV, 1, weightsV)
 		blas64.Gemv(blas.NoTrans, 1, blas64.General{Rows: n, Cols: m, Stride: m, Data: wm.TopGrad}, addV, 1, weightsV)
 
-		hErase := wm.Heads[i].EraseVector()
+		hErase := wm.Heads[i].EraseGrad()
 		for j := range hEraseGrad.Data {
 			hEraseGrad.Data[j] = 0
 		}
 		blas64.Gemv(blas.Trans, -1, mGradG, weightsVal, 1, hEraseGrad)
 		for j, e := range erase {
-			hErase[j].Grad += hEraseGrad.Data[j] * e * (1 - e)
+			hErase[j] += hEraseGrad.Data[j] * e * (1 - e)
 		}
 	}
 }
@@ -450,14 +464,14 @@ func (wm *writtenMemory) backwardAdd() {
 	for k, h := range wm.Heads {
 		add := wm.add[k]
 		ws := wm.Ws[k]
-		hAdd := h.AddVector()
+		hAdd := h.AddGrad()
 		for i := range hAdd {
 			grad = 0
 			for j := 0; j < n; j++ {
 				grad += wm.TopGrad[j*m+i] * ws.TopVal[j]
 			}
 			a := add[i]
-			hAdd[i].Grad += grad * a * (1 - a)
+			hAdd[i] += grad * a * (1 - a)
 		}
 	}
 }
@@ -499,18 +513,13 @@ func newMemOp(heads []*Head, mtm1 *writtenMemory) *memOp {
 		ss := make([]*betaSimilarity, mtm1.N)
 		for i := 0; i < mtm1.N; i++ {
 			m := len(mtm1.TopVal) / mtm1.N
-			units := make([]Unit, m)
-			for j := range units {
-				units[j].Val = mtm1.TopVal[i*m+j]
-			}
-
-			s := newSimilarityCircuit(h.K(), units)
-			ss[i] = newBetaSimilarity(h.Beta(), s)
+			s := newSimilarityCircuit(h.KVal(), h.KGrad(), mtm1.TopVal[i*m:(i+1)*m], mtm1.TopGrad[i*m:(i+1)*m])
+			ss[i] = newBetaSimilarity(h.BetaVal(), h.BetaGrad(), s)
 		}
 		wc := newContentAddressing(ss)
-		wg := newGatedWeighting(h.G(), wc, h.Wtm1)
-		ws := newShiftedWeighting(h.S(), wg)
-		circuit.W[wi] = newRefocus(h.Gamma(), ws)
+		wg := newGatedWeighting(h.GVal(), h.GGrad(), wc, h.Wtm1)
+		ws := newShiftedWeighting(h.SVal(), h.SGrad(), wg)
+		circuit.W[wi] = newRefocus(h.GammaVal(), h.GammaGrad(), ws)
 		circuit.R[wi] = newMemRead(circuit.W[wi], mtm1)
 	}
 
@@ -529,14 +538,9 @@ func (c *memOp) Backward() {
 		rf.SW.Backward()
 		rf.SW.WG.Backward()
 		rf.SW.WG.WC.Backward()
-		for i, bs := range rf.SW.WG.WC.Units {
+		for _, bs := range rf.SW.WG.WC.Units {
 			bs.Backward()
 			bs.S.Backward()
-
-			m := len(c.WM.TopVal) / c.WM.N
-			for j := range bs.S.V {
-				c.WM.Mtm1.TopGrad[i*m+j] += bs.S.V[j].Grad
-			}
 		}
 	}
 }

@@ -123,10 +123,10 @@ func printDebug(y [][]float64, machines []*ntm.NTM) {
 	outputT := 0
 	for t := outputT; t < len(machines); t++ {
 		h := machines[t].Controller.Heads()[0]
-		beta := math.Exp(h.Beta().Val)
-		g := ntm.Sigmoid(h.G().Val)
-		shift := math.Mod(2*ntm.Sigmoid(h.S().Val)-1+float64(n), float64(n))
-		gamma := math.Log(math.Exp(h.Gamma().Val)+1) + 1
-		log.Printf("beta: %.3g(%v), g: %.3g(%v), s: %.3g(%v), gamma: %.3g(%v), erase: %+v, add: %+v, k: %+v", beta, h.Beta(), g, h.G(), shift, h.S(), gamma, h.Gamma(), h.EraseVector(), h.AddVector(), h.K())
+		beta := math.Exp(*h.BetaVal())
+		g := ntm.Sigmoid(*h.GVal())
+		shift := math.Mod(2*ntm.Sigmoid(*h.SVal())-1+float64(n), float64(n))
+		gamma := math.Log(math.Exp(*h.GammaVal())+1) + 1
+		log.Printf("beta: %.3g(%v), g: %.3g(%v), s: %.3g(%v), gamma: %.3g(%v), erase: %+v, add: %+v, k: %+v", beta, *h.BetaVal(), g, *h.GVal(), shift, *h.SVal(), gamma, *h.GammaVal(), h.EraseVal(), h.AddVal(), h.KVal())
 	}
 }

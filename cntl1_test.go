@@ -105,9 +105,11 @@ func Controller1Forward(c1 Controller, reads [][]float64, x []float64) ([]float6
 	heads := make([]*Head, c.numHeads)
 	for i := range heads {
 		heads[i] = NewHead(c.memoryM)
-		hul := len(heads[i].units)
-		for j := range heads[i].units {
-			heads[i].units[j].Val += out[c.ySize+i*hul+j]
+		hul := headUnitsLen(c.MemoryM())
+		heads[i].vals = make([]float64, hul)
+		heads[i].grads = make([]float64, hul)
+		for j := range heads[i].vals {
+			heads[i].vals[j] += out[c.ySize+i*hul+j]
 		}
 	}
 
@@ -167,12 +169,10 @@ func loss(c Controller, forward ControllerForward, in [][]float64, model Density
 }
 
 func computeDensity(timestep int, pred []float64, model DensityModel) []float64 {
-	units := make([]Unit, len(pred))
-	for j := range units {
-		units[j].Val = pred[j]
-	}
-	model.Model(timestep, units)
-	return UnitVals(units)
+	den := make([]float64, len(pred))
+	copy(den, pred)
+	model.Model(timestep, den, make([]float64, len(pred)))
+	return den
 }
 
 func checkGradients(t *testing.T, c Controller, forward ControllerForward, in [][]float64, model DensityModel) {

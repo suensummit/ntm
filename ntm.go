@@ -19,55 +19,84 @@ func init() {
 }
 
 // A Head is a read write head on a memory bank.
-// It carriess every information that is required to operate on a memory bank according to the NTM architecture.
+// It carriess information that is required to operate on a memory bank according to the NTM architecture.
 type Head struct {
-	units []Unit
-	Wtm1  *refocus // the weights at time t-1
-	M     int      // size of a row in the memory
+	vals  []float64
+	grads []float64
+
+	Wtm1 *refocus // the weights at time t-1
+	M    int      // size of a row in the memory
 }
 
 // NewHead creates a new memory head.
 func NewHead(m int) *Head {
 	h := Head{
-		units: make([]Unit, headUnitsLen(m)),
-		M:     m,
+		M: m,
 	}
 	return &h
 }
 
 // EraseVector returns the erase vector of a memory head.
-func (h *Head) EraseVector() []Unit {
-	return h.units[0:h.M]
+func (h *Head) EraseVal() []float64 {
+	return h.vals[0:h.M]
+}
+
+func (h *Head) EraseGrad() []float64 {
+	return h.grads[0:h.M]
 }
 
 // AddVector returns the add vector of a memory head.
-func (h *Head) AddVector() []Unit {
-	return h.units[h.M : 2*h.M]
+func (h *Head) AddVal() []float64 {
+	return h.vals[h.M : 2*h.M]
+}
+
+func (h *Head) AddGrad() []float64 {
+	return h.grads[h.M : 2*h.M]
 }
 
 // K returns a head's key vector, which is the target data in the content addressing step.
-func (h *Head) K() []Unit {
-	return h.units[2*h.M : 3*h.M]
+func (h *Head) KVal() []float64 {
+	return h.vals[2*h.M : 3*h.M]
+}
+
+func (h *Head) KGrad() []float64 {
+	return h.grads[2*h.M : 3*h.M]
 }
 
 // Beta returns the key strength of a content addressing step.
-func (h *Head) Beta() *Unit {
-	return &h.units[3*h.M]
+func (h *Head) BetaVal() *float64 {
+	return &h.vals[3*h.M]
+}
+
+func (h *Head) BetaGrad() *float64 {
+	return &h.grads[3*h.M]
 }
 
 // G returns the degree in which we want to choose content-addressing over location-based-addressing.
-func (h *Head) G() *Unit {
-	return &h.units[3*h.M+1]
+func (h *Head) GVal() *float64 {
+	return &h.vals[3*h.M+1]
+}
+
+func (h *Head) GGrad() *float64 {
+	return &h.grads[3*h.M+1]
 }
 
 // S returns a value indicating how much the weightings are rotated in a location-based-addressing step.
-func (h *Head) S() *Unit {
-	return &h.units[3*h.M+2]
+func (h *Head) SVal() *float64 {
+	return &h.vals[3*h.M+2]
+}
+
+func (h *Head) SGrad() *float64 {
+	return &h.grads[3*h.M+2]
 }
 
 // Gamma returns the degree in which the addressing weights are sharpened.
-func (h *Head) Gamma() *Unit {
-	return &h.units[3*h.M+3]
+func (h *Head) GammaVal() *float64 {
+	return &h.vals[3*h.M+3]
+}
+
+func (h *Head) GammaGrad() *float64 {
+	return &h.grads[3*h.M+3]
 }
 
 func headUnitsLen(m int) int {
@@ -79,7 +108,8 @@ type Controller interface {
 	// Heads returns the emitted memory heads.
 	Heads() []*Head
 	// Y returns the output of the Controller.
-	Y() []Unit
+	YVal() []float64
+	YGrad() []float64
 
 	// Forward creates a new Controller which shares the same internal weights,
 	// and performs a forward pass whose results can be retrived by Heads and Y.
@@ -152,7 +182,7 @@ func ForwardBackward(c Controller, in [][]float64, out DensityModel) []*NTM {
 	}
 	for t := len(in) - 1; t >= 0; t-- {
 		m := machines[t]
-		out.Model(t, m.Controller.Y())
+		out.Model(t, m.Controller.YVal(), m.Controller.YGrad())
 		m.backward()
 	}
 
@@ -221,8 +251,7 @@ func MakeEmptyNTM(c Controller) (*NTM, []*memRead, []*contentAddressing) {
 func Predictions(machines []*NTM) [][]float64 {
 	pdts := make([][]float64, len(machines))
 	for t := range pdts {
-		y := machines[t].Controller.Y()
-		pdts[t] = UnitVals(y)
+		pdts[t] = machines[t].Controller.YVal()
 	}
 	return pdts
 }
@@ -326,7 +355,7 @@ func (r *RMSProp) update(a, b, c, d float64) {
 // An DensityModel is a model of how the last layer of a network gets transformed into the final output.
 type DensityModel interface {
 	// Model sets the value and gradient of Units of the output layer.
-	Model(t int, yH []Unit)
+	Model(t int, yHVal []float64, yHGrad []float64)
 	// Loss is the loss definition of this model.
 	Loss(output [][]float64) float64
 }
@@ -338,12 +367,12 @@ type LogisticModel struct {
 }
 
 // Model sets the values and gradients of the output units.
-func (m *LogisticModel) Model(t int, yHs []Unit) {
+func (m *LogisticModel) Model(t int, yHVal []float64, yHGrad []float64) {
 	ys := m.Y[t]
-	for i, yh := range yHs {
-		u := Unit{Val: Sigmoid(yh.Val)}
-		u.Grad = u.Val - ys[i]
-		yHs[i] = u
+	for i, yhv := range yHVal {
+		newYhv := Sigmoid(yhv)
+		yHVal[i] = newYhv
+		yHGrad[i] = newYhv - ys[i]
 	}
 }
 
@@ -367,19 +396,19 @@ type MultinomialModel struct {
 }
 
 // Model sets the values and gradients of the output units.
-func (m *MultinomialModel) Model(t int, yHs []Unit) {
+func (m *MultinomialModel) Model(t int, yHVal []float64, yHGrad []float64) {
 	var sum float64 = 0
-	for i, yh := range yHs {
-		v := math.Exp(yh.Val)
-		yHs[i].Val = v
+	for i, yhv := range yHVal {
+		v := math.Exp(yhv)
+		yHVal[i] = v
 		sum += v
 	}
 
 	k := m.Y[t]
-	for i, yh := range yHs {
-		u := Unit{Val: yh.Val / sum}
-		u.Grad = u.Val - delta(i, k)
-		yHs[i] = u
+	for i, yhv := range yHVal {
+		newYhv := yhv / sum
+		yHVal[i] = newYhv
+		yHGrad[i] = newYhv - delta(i, k)
 	}
 }
 
